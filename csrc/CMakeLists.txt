@@ -51,6 +51,10 @@ ascendc_library(no_workspace_kernel STATIC
     ${PROJECT_OP_SRC_BASE}/tri_inv/op_kernel/tri_inv_kernel.cpp
 )
 
+ascendc_include_directories(no_workspace_kernel PRIVATE
+    ${PROJECT_OP_SRC_BASE}/utils/kernel
+)
+
 # kernel side files with workspace
 set(WORKSPACE_KERNEL_SRCS
     ${PROJECT_OP_SRC_BASE}/mla_preprocess/op_kernel/mla_preprocess_kernel.cpp

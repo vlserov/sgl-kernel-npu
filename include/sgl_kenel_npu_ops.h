@@ -100,11 +100,12 @@ void sgemmv_shrink(at::Tensor &x, at::Tensor &weight, at::Tensor &lora_indices,
 
 at::Tensor sgemmc_expand(at::Tensor &x, at::Tensor &weight,
                          at::Tensor &lora_indices, at::Tensor &seq_len,
-                         at::Tensor &lora_ranks, at::Tensor &lora_scales,
-                         at::Tensor &slice_offsets, at::Tensor &y);
+                         at::Tensor &lora_ranks, at::Tensor &slice_offsets,
+                         at::Tensor &y);
 
 void sgemmc_shrink(at::Tensor &x, at::Tensor &weight, at::Tensor &lora_indices,
-                   at::Tensor &seq_len, at::Tensor &lora_ranks, at::Tensor &y);
+                   at::Tensor &seq_len, at::Tensor &lora_ranks,
+                   at::Tensor &lora_scales, at::Tensor &y);
 
 
 #ifdef BUILD_CATLASS_MODULE

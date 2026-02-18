@@ -67,17 +67,24 @@ TORCH_LIBRARY_FRAGMENT(npu, m)
         "Tensor device_indices, Tensor host_indices, int page_size, int direct, int flags) -> ()");
 
     m.def(
-        "bgmv_expand(Tensor! x, Tensor! weight, Tensor! indices, Tensor! y,"
-        "            int slice_offset, int slice_size) -> Tensor");
-
-    m.def("bgmv_shrink(Tensor! x, Tensor! weight, Tensor! indices, Tensor! y, float scale) -> ()");
-
-    m.def(
-        "sgmv_expand(Tensor! x, Tensor! weight, Tensor! lora_indices, Tensor! seq_len, Tensor! y,"
-        "            int slice_offset, int slice_size) -> Tensor");
+         "bgmv_expand(Tensor! x, Tensor! weight, Tensor! indices, Tensor! y,"
+         "            int slice_offset, int slice_size) -> Tensor")
+        .deprecated("sgemmv_expand");
 
     m.def(
-        "sgmv_shrink(Tensor! x, Tensor! weight, Tensor! lora_indices, Tensor! seq_len, Tensor! y, float scale) -> ()");
+         "bgmv_shrink(Tensor! x, Tensor! weight, Tensor! indices, Tensor! y,"
+         "            float scale) -> ()")
+        .deprecated("sgemmc_shrink");
+
+    m.def(
+         "sgmv_expand(Tensor! x, Tensor! weight, Tensor! lora_indices, Tensor! seq_len, Tensor! y,"
+         "            int slice_offset, int slice_size) -> Tensor")
+        .deprecated("sgemmv_expand");
+
+    m.def(
+         "sgmv_shrink(Tensor! x, Tensor! weight, Tensor! lora_indices, Tensor! seq_len, Tensor! y,"
+         " float scale) -> ()")
+        .deprecated("sgemmc_shrink");
 
     m.def(
         "sgemmv_expand(Tensor! x, Tensor! weight, Tensor! lora_indices, Tensor! seq_len, Tensor! lora_ranks,"
@@ -89,11 +96,11 @@ TORCH_LIBRARY_FRAGMENT(npu, m)
 
     m.def(
         "sgemmc_expand(Tensor! x, Tensor! weight, Tensor! lora_indices, Tensor! seq_len, Tensor! lora_ranks,"
-        "              Tensor! lora_scales, Tensor! sliceOffsets, Tensor! y) -> Tensor");
+        "              Tensor! sliceOffsets, Tensor! y) -> Tensor");
 
     m.def(
-        "sgemmc_shrink(Tensor! x, Tensor! weight, Tensor! lora_indices, Tensor! seq_len,"
-        "              Tensor! lora_ranks, Tensor! y) -> ()");
+        "sgemmc_shrink(Tensor! x, Tensor! weight, Tensor! lora_indices, Tensor! seq_len, Tensor! lora_ranks,"
+        "              Tensor! lora_scales, Tensor! y) -> ()");
 
 #ifdef BUILD_CATLASS_MODULE
     m.def("catlass_matmul_basic(Tensor tensor_a, Tensor tensor_b, Tensor(a!) tensor_c, str? format_mode=None) -> ()");
@@ -138,9 +145,9 @@ TORCH_LIBRARY_IMPL(npu, PrivateUse1, m)
 
     m.impl("sgmv_shrink", TORCH_FN(sglang::npu_kernel::sgmv_shrink));
 
-    m.impl("sgemmv_expand", TORCH_FN(sglang::npu_kernel::sgemmv_expand));
+    m.impl("sgemmv_expand", TORCH_FN(sglang::npu_kernel::sgemmc_expand));
 
-    m.impl("sgemmv_shrink", TORCH_FN(sglang::npu_kernel::sgemmv_shrink));
+    m.impl("sgemmv_shrink", TORCH_FN(sglang::npu_kernel::sgemmc_shrink));
 
     m.impl("sgemmc_expand", TORCH_FN(sglang::npu_kernel::sgemmc_expand));
 

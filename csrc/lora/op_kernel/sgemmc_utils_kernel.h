@@ -25,19 +25,4 @@ struct MNConfig {
     uint32_t workSpaceOffset = 0;
 };
 
-template<>
-__aicore__ inline uint32_t AlignUp<8, uint32_t>(uint32_t a) {
-    return (a + 7) & ~7;
-}
-
-template<>
-__aicore__ inline uint32_t AlignUp<16, uint32_t>(uint32_t a) {
-    return (a + 15) & ~15;
-}
-
-template<>
-__aicore__ inline uint32_t AlignUp<32, uint32_t>(uint32_t a) {
-    return (a + 31) & ~31;
-}
-
-#endif // SGL_KERNEL_NPU_KERNEL_SGEMMC_UTILS_H
+#endif  // SGL_KERNEL_NPU_KERNEL_SGEMMC_UTILS_H

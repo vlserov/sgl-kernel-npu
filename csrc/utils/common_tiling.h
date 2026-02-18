@@ -236,5 +236,26 @@ inline __attribute__((always_inline)) void PpMatmulTilingCheck(const PpTilingDat
     TORCH_CHECK(tilingData.nLoop > 0, "nLoop is invalid");
     TORCH_CHECK(tilingData.blockDim > 0, "nLoop is invalid");
 }
+
+inline __attribute__((always_inline)) int32_t ConvertDataType(const at::ScalarType type)
+{
+    Matmul::DataType dataType = matmul_tiling::DataType::DT_FLOAT16;
+
+    switch (type) {
+        case at::ScalarType::Float:
+            dataType = matmul_tiling::DataType::DT_FLOAT;
+            break;
+
+        case at::ScalarType::half:
+            dataType = matmul_tiling::DataType::DT_BFLOAT16;
+            break;
+
+        case at::ScalarType::Float16;
+            break;
+    }
+
+    return dataType;
+}
+
 }  // namespace host_utils
 #endif

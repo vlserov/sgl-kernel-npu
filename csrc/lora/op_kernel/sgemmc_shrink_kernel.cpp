@@ -19,43 +19,42 @@
 #ifndef SGL_KERNEL_NPU_KERNEL_SGEMMC_SHRINK_H
 #define SGL_KERNEL_NPU_KERNEL_SGEMMC_SHRINK_H
 
+#include <type_traits>
 #include "kernel_operator.h"
+#include "lib/matmul_intf.h"
+#include "lora_common_kernel.h"
+#include "common_tiling_kernel.h"
 #include "sgemmc_utils_kernel.h"
 
-template <typename scalar_t>
+template <typename scalar_t, typename inner_t>
 class SGEMMCShrink
 {
 public:
     using X_T = scalar_t;
     using W_T = scalar_t;
+    using INNER_T = inner_t;
     using Y_T = scalar_t;
 
-    using X_MAT_TYPE = MatMul<AscendC::TPosition::GM, CubeFormat::ND, X_T, false>;
-    using W_MAT_TYPE = MatMul<AscendC::TPosition::GM, CubeFormat::ND, W_T, true>;
-    using Y_MAT_TYPE = MatMul<AscendC::TPosition::GM, CubeFormat::ND, Y_T>;
-    using BIAS_MAT_TYPE = MatMul<AscendC::TPosition::GM, CubeFormat::ND, X_T>;
+    using X_MAT_TYPE = AscendC::MatmulType<AscendC::TPosition::GM, CubeFormat::VECTOR, X_T, false>;
+    using W_MAT_TYPE = AscendC::MatmulType<AscendC::TPosition::GM, CubeFormat::ND, W_T, true>;
+    using Y_MAT_TYPE = AscendC::MatmulType<AscendC::TPosition::VECIN, CubeFormat::ND, INNER_T>;
+    using BIAS_MAT_TYPE = AscendC::MatmulType<AscendC::TPosition::GM, CubeFormat::ND, X_T>;
 
-    using MAT_TYPE = MMImplType<X_MAT_TYPE, W_MAT_TYPE, Y_MAT_TYPE, BIAS_MAT_TYPE, cfg>
-
-    constexpr static bool transposeX = MAT_TYPE::AT::isTrans;
-    constexpr static bool transposeW = MAT_TYPE::BT::isTrans;
-
-    static constexpr uint64_t BUFFER_NUM = 1;
-    static constexpr uint64_t TILE_LENGTH = 11776;  // optimal performance tile length
+    using MAT_TYPE = AscendC::Matmul<X_MAT_TYPE, W_MAT_TYPE, Y_MAT_TYPE, BIAS_MAT_TYPE, CFG_MDL>;
 
 public:
-    __aicore__ inline SGEMMCShrink(AscendC::TPipe *pipe) : pipe_(pipe) {}
+    __aicore__ explicit SGEMMCShrink(AscendC::TPipe *pipe) : pipe_(pipe) {}
     __aicore__ inline void Init(GM_ADDR x, GM_ADDR weight, GM_ADDR loraIndices, uint32_t loraIndicesSize,
                                 GM_ADDR seqLen, uint32_t seqLenSize, GM_ADDR loraRanks, uint32_t loraRanksSize,
-                                GM_ADDR y, uint32_t batchSize,uint32_t numTokensPerCore, uint32_t inputHiddenDim,
-                                uint32_t maxLoRARank)
+                                GM_ADDR loraScales, uint32_t loraScalesSize, GM_ADDR y, uint32_t batchSize,
+                                uint32_t numBlocksPerCore, uint32_t inputHiddenDim, uint32_t maxLoRARank,
+                                GM_ADDR workspace, TCubeTiling &tiling)
     {
         batchSize_ = batchSize;
-        numTokensPerCore_ = numTokensPerCore;
+        numBlocksPerCore_ = numBlocksPerCore;
         inputHiddenDim_ = inputHiddenDim;
         maxLoRARank_ = maxLoRARank;
         singleLoRAWeightLen_ = inputHiddenDim_ * maxLoRARank_;
-        incremental_ = inputHiddenDim_ > TILE_LENGTH;
 
         xInGm_.SetGlobalBuffer(reinterpret_cast<__gm__ X_T *>(x));
         yOutGm_.SetGlobalBuffer(reinterpret_cast<__gm__ Y_T *>(y));
@@ -63,105 +62,75 @@ public:
         loraIndicesGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(loraIndices), loraIndicesSize);
         seqLenGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(seqLen), seqLenSize);
         loraRanksGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(loraRanks), loraRanksSize);
+        loraScalesGm_.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(loraScales), loraScalesSize);
 
-        pipe_->InitBuffer(inQueueX_, BUFFER_NUM, TILE_LENGTH * sizeof(X_T));
-        pipe_->InitBuffer(inQueueW_, BUFFER_NUM, TILE_LENGTH * sizeof(W_T));
-        pipe_->InitBuffer(tmpBufferX_, TILE_LENGTH * sizeof(float));
-        pipe_->InitBuffer(tmpBufferW_, TILE_LENGTH * sizeof(float));
-
-        pipe_->InitBuffer(outQueueY_, 1, maxLoRARank_ * sizeof(Y_T));
-        pipe_->InitBuffer(outBufferY_, maxLoRARank_ * sizeof(float));
+        REGIST_MATMUL_OBJ(pipe_, GetSysWorkSpacePtr(), matmulObj, &(this->tiling));
     }
 
     __aicore__ inline void Process()
     {
+        int64_t blocks = AscendC::GetBlockNum();
         int64_t blockIdx = AscendC::GetBlockIdx();
-        int64_t startIdx = blockIdx * numTokensPerCore_;
-        int64_t endIdx = startIdx + numTokensPerCore_;
 
-        MNConfig mnConfig;
-        preOffset = 0;
+        int64_t startIdx = blockIdx * numBlocksPerCore_;
+        int64_t endIdx = startIdx + numBlocksPerCore_;
 
         AscendC::WaitPreTaskEnd();
-        for (uint32_t loraIdx = 0, count = 0; loraIdx < usedLoraCount; ++loraIdx)
-        {
-            uint32_t curCount = count + mnConfig.blockDimM * mnConfig.blockDimN;
-            uint32_t curBlock = coreIdx >= count ? coreIdx : coreIdx + tiling->coreNum;
-            uint32_t thresholdM_dimN;
 
-            while (curBlock < curCount) {
-                ComputeCube()
-                ComputeVector() // Do nothing
-                curBlock += tiling->coreNum;
+        int64_t requestBlock = 0;
+        lora_common::BlockIterator blockIterator(seqLenGm_);
+
+        matmulObj.SetTensorA(xInGm_);
+        matmulObj.SetTensorB(wInGm_);
+        matmulObj.SetWorkspace(workspaceGlobal);
+        matmulObj.template Iterate<false>();
+
+        Y_T scalar = AscendC::ScalarCast<half, INNER_T, AscendC::RoundMode::CAST_ROUND>(1.0f);
+
+        uint32_t baseM = this->tiling.baseM;
+        uint32_t baseN = this->tiling.baseN;
+        pipe_->InitBuffer(vectorInQueue, 1, baseM * baseN * sizeof(INNER_T));
+        pipe_->InitBuffer(vectorCalcQueue, 1, baseM * baseN * sizeof(Y_T));
+        pipe_->InitBuffer(vectorOutQueue, 1, baseM * baseN * sizeof(Y_T));
+
+        AscendC::DataCopyParams copyParams = {
+            (uint16_t)baseM, (uint16_t)(baseN * sizeof(Y_T) / AscendC::DEFAULT_C0_SIZE), (uint16_t)0,
+            (uint16_t)((this->tiling.N - baseN) * sizeof(Y_T) / AscendC::DEFAULT_C0_SIZE)};
+        uint32_t iterateTimes =
+            AscendC::Ceil(this->tiling.singleCoreM, baseM) * AscendC::Ceil(this->tiling.singleCoreN, baseN);
+        for (uint32_t i = 0; i < iterateTimes; ++i) {
+            // compute
+            auto cInLocal = vectorInQueue.AllocTensor<INNER_T>();
+            matmulObj.template GetTensorC<false>(cInLocal);
+            vectorInQueue.EnQue(cInLocal);
+            // any vector operator
+            auto src = vectorInQueue.DeQue<INNER_T>();
+            auto dst = vectorOutQueue.AllocTensor<Y_T>();
+
+            if constexpr (!std::is_same_v<Y_T, INNER_T>) {
+                AscendC::LocalTensor<INNER_T> tmpTensor = calcBuf.Get<T>();
+                AscendC::Muls(tmpTensor, src, scalar, baseM * baseN);
+                PipeBarrier<PIPE_V>();
+                AscendC::Cast(dst, tmpTensor, AscendC::RoundMode::CAST_NONE, baseM * baseN);
+                PipeBarrier<PIPE_V>();
+            } else {
+                AscendC::Muls(dst, src, scalar, baseM * baseN);
+                PipeBarrier<PIPE_V>();
             }
-            count = curCount % tiling->coreNum;
+            vectorOutQueue.EnQue(dst);
+            vectorInQueue.FreeTensor(src);
+            // copy out
+            auto cOutLocal = vectorOutQueue.DeQue<Y_T>();
+            DataCopy(yOutGm_[CalcDstOffset(i)], cOutLocal, copyParams);
+            vectorOutQueue.FreeTensor(cOutLocal);
         }
+        matmulObj.End();
         AscendC::SetNextTaskStart();
     }
 
 private:
-    __aicore__ inline void ComputeVector()
-    {
-        if ASCEND_IS_AIC {
-            return;
-        }
-        // Make computations on the vector utit
-    }
-
-    __aicore__ inline void ComputeCube()
-    {
-        if ASCEND_IS_AIC {
-            
-        }
-    }
-
-    template <bool INCREMENTAL_MODE>
-    __aicore__ inline void ProcessImpl(const int64_t idx)
-    {
-        AscendC::LocalTensor<float> yOutLocal = outBufferY_.Get<float>();
-        if constexpr (!INCREMENTAL_MODE) {
-            CopyInX(idx, 0, inputHiddenDim_);
-            AscendC::LocalTensor<float> xTmpTensor = tmpBufferX_.Get<float>();
-            AscendC::LocalTensor<X_T> xLocal = inQueueX_.DeQue<X_T>();
-            Cast(xTmpTensor, xLocal, AscendC::RoundMode::CAST_NONE, inputHiddenDim_);
-            pipe_barrier(PIPE_V);
-            inQueueX_.FreeTensor(xLocal);
-        }
-
-        for (int i = 0; i < reqLoRARank_; i++) {
-            float acc(0);
-            for (int32_t j = 0; j < inputHiddenDim_ / TILE_LENGTH; j++) {
-                if constexpr (INCREMENTAL_MODE) {
-                    CopyInX(idx, j);
-                }
-                CopyInW(i, j);
-                Compute<INCREMENTAL_MODE>(acc);
-            }
-            CopyAndComputeLastIteration<INCREMENTAL_MODE>(idx, i, acc);
-            yOutLocal.SetValue(i, acc);
-        }
-    }
-
-    __aicore__ inline void CopyInIndex(const int64_t idx)
-    {
-        // look up the LoRA index
-        int64_t weightIdx = idx;
-        uint64_t i = 0;
-        for (; i < seqLenGm_.GetSize(); i++) {
-            int64_t repeatValue = seqLenGm_.GetValue(i);
-            if (weightIdx >= repeatValue) {
-                weightIdx -= repeatValue;
-                continue;
-            }
-            break;
-        }
-        reqLoRAIndex_ = (i < seqLenGm_.GetSize()) ? loraIndicesGm_.GetValue(i) : -1;
-    }
-
-
-private:
     AscendC::TPipe *pipe_;
-    typename MAT_TYPE::MT& matmul_;
+    MAT_TYPE matmulObj;
 
     AscendC::GlobalTensor<X_T> xInGm_;
     AscendC::GlobalTensor<W_T> wInGm_;
@@ -169,9 +138,18 @@ private:
     AscendC::GlobalTensor<int32_t> loraIndicesGm_;
     AscendC::GlobalTensor<int32_t> seqLenGm_;
     AscendC::GlobalTensor<int32_t> loraRanksGm_;
+    AscendC::GlobalTensor<half> loraScalesGm_;
+
+    AscendC::GlobalTensor<Y_T> workspaceGlobal;
+    AscendC::LocalTensor<Y_T> vectorInLocal;
+
+    TCubeTiling tiling;
+    AscendC::TQue<AscendC::QuePosition::VECIN, 1> vectorInQueue;
+    AscendC::TQue<AscendC::QuePosition::VECCALC, 1> vectorCalcQueue;
+    AscendC::TQue<AscendC::QuePosition::VECOUT, 1> vectorOutQueue;
 
     uint32_t batchSize_;
-    uint32_t numTokensPerCore_;
+    uint32_t numBlocksPerCore_;
     uint32_t inputHiddenDim_;
     uint32_t maxLoRARank_;
     uint32_t singleLoRAWeightLen_;
@@ -181,19 +159,33 @@ private:
     int32_t reqLoRARank_;
 };
 
-extern "C" __global__ __aicore__ void sgemmc_shrink(
-    GM_ADDR x, GM_ADDR weight, GM_ADDR loraIndices, uint32_t loraIndicesSize, GM_ADDR seqLen, uint32_t seqLenSize,
-    GM_ADDR loraRanks, uint32_t loraRanksSize, GM_ADDR y, uint32_t batchSize, uint32_t numTokensPerCore,
-    uint32_t inputHiddenDim, uint32_t maxLoRARank, GM_ADDR workspace, GM_ADDR tiling)
+extern "C" __global__ __aicore__ void sgemmc_shrink(GM_ADDR x, GM_ADDR weight, GM_ADDR loraIndices,
+                                                    uint32_t loraIndicesSize, GM_ADDR seqLen, uint32_t seqLenSize,
+                                                    GM_ADDR loraRanks, uint32_t loraRanksSize, GM_ADDR loraScales,
+                                                    uint32_t loraScalesSize, GM_ADDR y, uint32_t batchSize,
+                                                    uint32_t numBlocksPerCore, uint32_t inputHiddenDim,
+                                                    uint32_t maxLoRARank, GM_ADDR workspace, GM_ADDR tiling)
 {
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_1);
+
     AscendC::TPipe pipe;
-    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIC_ONLY);
+    SGEMMCommon::SGEMMTiling tilingData;
+    kernel_utils::CopyTiling(&tilingData, tiling);
     GM_ADDR userWorkSpace = GetUserWorkSpacePtr(workspace);
 
-    SGEMMCShrink<half> op(&pipe);
-    op.Init(x, weight, loraIndices, loraIndicesSize, seqLen, seqLenSize, loraRanks, loraRanksSize,
-            y, batchSize, numTokensPerCore, inputHiddenDim, maxLoRARank);
-    op.Process();
+    if (tilingData.dataType == matmul_tiling::DataType::DT_BFLOAT16) {
+        SGEMMCShrink<bfloat16_t, float> op(&pipe);
+        op.Init(x, weight, loraIndices, loraIndicesSize, seqLen, seqLenSize, loraRanks, loraRanksSize, loraScales,
+                loraScalesSize, y, batchSize, numBlocksPerCore, inputHiddenDim, maxLoRARank, workspace,
+                tilingData.tiling);
+        op.Process();
+    } else {
+        SGEMMCShrink<half, half> op(&pipe);
+        op.Init(x, weight, loraIndices, loraIndicesSize, seqLen, seqLenSize, loraRanks, loraRanksSize, loraScales,
+                loraScalesSize, y, batchSize, numBlocksPerCore, inputHiddenDim, maxLoRARank, workspace,
+                tilingData.tiling);
+        op.Process();
+    }
 }
 
 #endif  // SGL_KERNEL_NPU_KERNEL_SGEMMC_SHRINK_H

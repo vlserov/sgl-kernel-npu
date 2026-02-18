@@ -25,9 +25,9 @@
 namespace sglang {
 namespace npu_kernel {
 
-HOST_API at::Tensor sgemmc_expand(at::Tensor &x, at::Tensor &weight, at::Tensor &lora_indices,
-                                  at::Tensor &seq_len, at::Tensor &lora_ranks, at::Tensor &lora_scales,
-                                  at::Tensor &slice_offsets, at::Tensor &y)
+HOST_API at::Tensor sgemmc_expand(at::Tensor &x, at::Tensor &weight, at::Tensor &lora_indices, at::Tensor &seq_len,
+                                  at::Tensor &lora_ranks, at::Tensor &lora_scales, at::Tensor &slice_offsets,
+                                  at::Tensor &y)
 {
     at::ScalarType scalar_type = y.scalar_type();
     TORCH_CHECK(scalar_type == at::kHalf || scalar_type == at::kBFloat16, "only support half and bf16");
@@ -59,17 +59,18 @@ HOST_API at::Tensor sgemmc_expand(at::Tensor &x, at::Tensor &weight, at::Tensor 
 
     int32_t block_dim;
     int32_t workspace_size;
-    int64_t total_extend_tokens = out_indices.sizes()[0];  // 64k
+    int64_t total_extend_tokens = out_indices.sizes()[0];
 
     at::Tensor tiling_tensor = get_expand_tiling(block_dim, workspace_size, batch_size, total_extend_tokens);
-    auto workspace_tensor = at::empty({workspace_size}, at::TensorOptions().dtype(at::kByte).device(x.options().device()));
+    auto workspace_tensor =
+        at::empty({workspace_size}, at::TensorOptions().dtype(at::kByte).device(x.options().device()));
 
     /* launch the kernel function via torch */
-    EXEC_KERNEL_CMD(sgemmv_expand, block_dim, x_ptr, weight_ptr, lora_indices_ptr, lora_indices_size,
-                    seq_len_ptr, seq_len_size, lora_ranks_ptr, lora_ranks_size, lora_scales_ptr, lora_scales_size,
-                    slice_offsets_ptr, slice_offsets_size, y_ptr, y_out_ptr, batch_size, num_tokens_per_core,
-                    max_lora_rank, output_full_dim, workspace_tensor, tiling_tensor);
-    return;
+    EXEC_KERNEL_CMD(sgemmv_expand, block_dim, x_ptr, weight_ptr, lora_indices_ptr, lora_indices_size, seq_len_ptr,
+                    seq_len_size, lora_ranks_ptr, lora_ranks_size, lora_scales_ptr, lora_scales_size, slice_offsets_ptr,
+                    slice_offsets_size, y_ptr, y_out_ptr, batch_size, num_tokens_per_core, max_lora_rank,
+                    output_full_dim, workspace_tensor, tiling_tensor);
+
     return y_out;
 }
 
