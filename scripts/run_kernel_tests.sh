@@ -97,6 +97,8 @@ FUSED_TESTS=(
     # test_catlass_matmul_basic.py  # FAILING: flaky float16 precision (0.0078 > 0.0005)
     test_qkvzba_split_reshape_cat.py
     test_lora_kernels.py
+    test_lora_kernels_perf.py
+    test_lora_perf_config.py
     test_gmm_wfp8a16.py
     test_mm_wfp8a16.py
 )

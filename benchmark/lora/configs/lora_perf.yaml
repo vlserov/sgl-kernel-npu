@@ -1,0 +1,75 @@
+# Full LoRA kernel performance sweep.
+#
+# The suite mirrors the default sweep of benchmark/lora/bench_lora_kernels.py:
+# decode and prefill shapes, float16, every LoRA operator.
+#
+# Run it with:
+#   python benchmark/lora/bench_lora_kernels.py --suite lora_perf
+name: lora-perf
+description: Full LoRA kernel sweep (decode + prefill, float16, all operators)
+
+defaults:
+  dtype: float16
+  hidden: 4096
+  num_loras: 8
+  ranks: [16]
+  slice_widths: [4096]
+  index_mode: random
+  seed: 20260620
+  baseline: true
+  check: true
+  group: default
+  timing:
+    warmup: 5
+    iters: 20
+    repeat: 5
+
+scenarios:
+  # Decode: one token per sequence.
+  - name: decode-b1
+    tokens: 1
+    seq_len: 1
+  - name: decode-b8
+    tokens: 8
+    seq_len: 1
+  - name: decode-b64
+    tokens: 64
+    seq_len: 1
+  - name: decode-b256
+    tokens: 256
+    seq_len: 1
+
+  # Prefill: 128 tokens per sequence.
+  - name: prefill-t512
+    tokens: 512
+    seq_len: 128
+  - name: prefill-t2048
+    tokens: 2048
+    seq_len: 128
+  - name: prefill-t8192
+    tokens: 8192
+    seq_len: 128
+
+  # QKV-style fused slices, exercised by the grouped operators only.
+  - name: qkv-prefill-t2048
+    tokens: 2048
+    seq_len: 128
+    slice_widths: [1024, 1024, 1024]
+    group: fused-slices
+    ops: [sgemmv_shrink, sgemmv_expand, sgemmc_shrink, sgemmc_expand]
+
+  # Adapters with different ranks, exercised by the grouped operators only.
+  # The fixed-rank operators (sgmv/bgmv) share one rank across adapters.
+  - name: mixed-rank-prefill-t2048
+    tokens: 2048
+    seq_len: 128
+    ranks: [8, 16, 32, 64]
+    group: mixed-ranks
+    ops: [sgemmv_shrink, sgemmv_expand, sgemmc_shrink, sgemmc_expand]
+
+bounds:
+  # Generous regression bounds: they only catch a kernel that became orders
+  # of magnitude slower, not small performance changes.
+  max_latency_ms: 100.0
+  max_slowdown: 50.0
+  strict_check: false

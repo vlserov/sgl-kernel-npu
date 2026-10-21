@@ -39,7 +39,8 @@ else
 fi
 
 # Install other test dependencies
-uv pip install expecttest einops pytest packaging
+# pyyaml is required by the LoRA performance suites (benchmark/lora/configs).
+uv pip install expecttest einops pytest packaging pyyaml
 
 # --- Step 2: Build and install kernel module ---
 
